@@ -8,11 +8,15 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import Dict, List
 
-from .config import parse_args, config_from_args
+from instaflow.drag_utils import DragOutput
+from instaflow.pipeline_rf import RectifiedFlowPipeline
+
+from .config import config_from_args
 from .pipeline_manager import create_pipeline
 from .drag_operations import run_rf_drag
 from .utils import (
     set_seed, 
+    invert_state_from_image,
     load_dragbench_sample, 
     setup_result_directory,
     logger
@@ -122,9 +126,9 @@ class MetricsEvaluator:
         # Compute Image Fidelity
         image_fidelity = self.if_metric.image_fidelity(base_tensor, dragged_tensor).item()
         
-        # Separate handle and target points
-        handle_points = [(int(p[0]), int(p[1])) for p in points[::2]]
-        target_points = [(int(p[0]), int(p[1])) for p in points[1::2]]
+        # Separate handle and target points and convert to (row, col) format
+        handle_points = [(int(p[1]), int(p[0])) for p in points[::2]]
+        target_points = [(int(p[1]), int(p[0])) for p in points[1::2]]
         
         # Compute Mean Distance
         mean_distance = self.md_metric.mean_distance(
@@ -155,9 +159,10 @@ def save_sample_results(
     output_dir: str,
     category: str,
     sample_name: str,
-    drag_output,
+    drag_output: DragOutput,
+    pipe: RectifiedFlowPipeline,
     metrics: Dict[str, float],
-    save_intermediates: bool = False
+    save_intermediates: bool = False,
 ):
     """Save editing results and metrics for a single sample."""
     save_dir = Path(output_dir) / category / sample_name
@@ -172,7 +177,7 @@ def save_sample_results(
     if save_intermediates and hasattr(drag_output, 'optim_steps'):
         for i, step_data in enumerate(drag_output.optim_steps):
             if hasattr(step_data, 'latent'):
-                img = drag_output.pipe.decode_latents(
+                img = pipe.decode_latents(
                     step_data.latent,
                     disable_safety_checker=True
                 )[0][0]
@@ -243,13 +248,13 @@ def benchmark_mode(args: argparse.Namespace):
                     # Load sample
                     source_image, prompt, mask, points = load_dragbench_sample(sample_path)
                     
-                    # Prepare state from image
-                    state = pipe.prepare_state(
-                        prompt=prompt,
-                        height=source_image.shape[0],
-                        width=source_image.shape[1],
+                    # Compute the initial latent that would generate the sample
+                    state = invert_state_from_image(
+                        pipe.pipe,
+                        source_image,
+                        prompt,
+                        num_inference_steps=pipeline_config.num_inference_steps,
                     )
-                    state = pipe.infer_until(state, drag_config.drag_step)
                     
                     # Run drag
                     drag_output = run_rf_drag(
@@ -289,8 +294,9 @@ def benchmark_mode(args: argparse.Namespace):
                         cat,
                         sample_name,
                         drag_output,
+                        pipe,
                         metrics,
-                        benchmark_config.save_intermediates
+                        save_intermediates=benchmark_config.save_intermediates,
                     )
                     
                 except Exception as e:

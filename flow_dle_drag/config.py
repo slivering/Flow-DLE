@@ -2,8 +2,8 @@
 
 import argparse
 from dataclasses import dataclass, field
+import logging
 from typing import List, Optional
-
 
 @dataclass
 class DragConfig:
@@ -18,8 +18,8 @@ class DragConfig:
     r_m: int = 1
     r_p: int = 3
     end_step: int = 50
-    show_optim_process: bool = False
-    vis_interval: int = 10
+    show_optim_process: bool = False # FIXME: required by benchmark_config.save_intermediates
+    vis_interval: int = 10 # FIXME: required by benchmark_config.save_intermediates
 
 
 @dataclass
@@ -226,7 +226,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def config_from_args(args: argparse.Namespace) -> tuple:
+def config_from_args(args: argparse.Namespace) -> tuple[DragConfig, PipelineConfig, BenchmarkConfig]:
     """Convert parsed arguments to configuration objects."""
     drag_config = DragConfig(
         drag_step=args.drag_step,
@@ -250,6 +250,13 @@ def config_from_args(args: argparse.Namespace) -> tuple:
         num_inference_steps=args.num_steps,
         guidance_scale=args.guidance_scale
     )
+
+    if drag_config.end_step != pipeline_config.num_inference_steps:
+        logging.warning(
+            f"Mismatch detected: end_step={drag_config.end_step} "
+            f"≠ num_inference_steps={pipeline_config.num_inference_steps}. "
+            f"For fair benchmarking, these should match."
+        )
     
     benchmark_config = None
     if hasattr(args, 'root_dir'):

@@ -135,7 +135,6 @@ def run_rf_drag(
     state.latent = drag_output.latent
     
     # Continue inference to end
-    state = pipe.infer_until(state, config.drag_step)
     drag_code_vis_after = pipe.decode_latents(
         state.latent, 
         disable_safety_checker=True

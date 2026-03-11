@@ -6,7 +6,10 @@ import logging
 from pathlib import Path
 from typing import Tuple, Optional
 import numpy as np
+import torch
 from PIL import Image
+
+from instaflow.pipeline_edit import InferenceState, RectifiedFlowStateMachine
 
 from .config import DragConfig
 
@@ -32,6 +35,125 @@ def set_seed(seed: int = 0xdeadbeef):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+@torch.no_grad()
+def np_to_latent(
+    pipe: RectifiedFlowStateMachine,
+    x: np.ndarray
+) -> torch.Tensor:
+    """Convert RGB numpy image to VAE latent space representation.
+    
+    Normalizes pixel values to [-1, 1], converts to tensor, and encodes 
+    through the VAE encoder. Applies VAE scale factor for proper latent 
+    normalization.
+    
+    Args:
+        pipe: RectifiedFlowStateMachine pipeline instance
+        x: RGB image as numpy array, shape [H, W, C], values in [0, 255]
+    
+    Returns:
+        Latent tensor of shape [1, C_latent, H_latent, W_latent]
+    
+    Note:
+        Uses torch.no_grad() to avoid computing gradients during encoding.
+    """
+    # Normalize to [-1, 1] range expected by VAE
+    x = x.astype(np.float32) / 255.0
+    x = (x * 2.0 - 1.0).transpose(2, 0, 1)  # HWC -> CHW
+    
+    # Convert to tensor and move to pipeline device/dtype
+    x = torch.from_numpy(x).unsqueeze(0).to(device=pipe.device, dtype=pipe.dtype)
+    
+    # Encode through VAE and apply scale factor
+    lat = pipe.vae.encode(x).latent_dist.sample() * pipe.vae.config.scaling_factor
+    return lat
+
+
+def invert_state_from_image(
+    pipe: RectifiedFlowStateMachine,
+    source_image: np.ndarray,
+    prompt: str,
+    num_inference_steps: int,
+) -> InferenceState:
+    """Create InferenceState from existing image via flow inversion.
+    
+    Encodes the source image into latent space, then runs rectified flow 
+    inversion to compute the initial noise latent that would generate this 
+    image. This enables editing of non-generated images (e.g., benchmark 
+    samples) by treating them as if they were generated outputs.
+    
+    Args:
+        pipe: RectifiedFlowStateMachine pipeline instance
+        source_image: Input image as numpy array [H, W, C], values [0, 255]
+        prompt: Text prompt for conditioning during inversion
+        num_inference_steps: Number of inversion steps (higher = more accurate)
+    
+    Returns:
+        InferenceState with inverted initial_latent ready for drag editing
+    
+    Note:
+        The inverted state starts at step 0 with initial_latent set. 
+        run_rf_drag will then run inference until drag_step before applying edits.
+    """
+    # Prepare state with image dimensions and prompt
+    state = pipe.prepare_state(
+        prompt=prompt,
+        height=source_image.shape[0],
+        width=source_image.shape[1],
+        num_inference_steps=num_inference_steps,
+    )
+    
+    # Encode source image to latent space
+    state.latent = np_to_latent(pipe, source_image)
+    state.i = num_inference_steps  # Start inversion from final step
+    
+    # Run flow inversion to recover initial noise latent
+    state = pipe.invert_from_state(state)
+    
+    # Store inverted latent as initial condition for subsequent editing
+    state.initial_latent = state.latent.detach().clone()
+    
+    return state
+
+
+def pad_to_multiple(array: np.ndarray, divisor: int = 32, pad_value = 0):
+    """
+    Pads a numpy array to make height and width multiples of a given divisor.
+    Padding is added to the bottom and right with a specified value.
+    
+    Args:
+        array: numpy array representing an image (H x W) or (H x W x C)
+        divisor: The number that dimensions should be multiples of (default: 32)
+        pad_value: The value to use for padding (default: 0 for black)
+    
+    Returns:
+        Padded numpy array with dimensions divisible by divisor
+    """
+    # Get original dimensions
+    height, width = array.shape[:2]
+    
+    # Calculate padding needed for each dimension
+    pad_height = (divisor - (height % divisor)) % divisor
+    pad_width = (divisor - (width % divisor)) % divisor
+    
+    # Create padding specification for np.pad
+    if len(array.shape) == 3:
+        # RGB or RGBA image
+        pad_spec = ((0, pad_height), (0, pad_width), (0, 0))
+    else:
+        # Grayscale image
+        pad_spec = ((0, pad_height), (0, pad_width))
+    
+    # Apply padding
+    padded_array = np.pad(
+        array,
+        pad_width=pad_spec,
+        mode='constant',
+        constant_values=pad_value
+    )
+    
+    return padded_array
 
 
 def load_dragbench_sample(
@@ -60,9 +182,25 @@ def load_dragbench_sample(
         prompt = meta_data['prompt']
         mask = meta_data['mask']
         points = meta_data['points']
+
+        # DEBUG
+        assert mask.min() == 0 and mask.max() == 1
+
+        height, width, _ = source_image.shape
+        if mask.shape != (height, width):
+            raise RuntimeError(
+                f"Mismatched dimensions: mask {mask.shape} != source {(height, width)}"
+            )
         
+        # Enforce image dimensions to be multiple of 32 for compatibility with latent scaling
+        divisor = 32
+        if width % divisor != 0 or height % divisor != 0:
+            logger.debug(f"Sample shape is {source_image.shape}, padding to multiple of {divisor}")
+            source_image = pad_to_multiple(source_image, divisor, pad_value=0)
+            mask = pad_to_multiple(mask, divisor, pad_value=0)
+
         logger.debug(f"Loaded sample: {source_image.shape}, {len(points)} points")
-        logger.debug(f"Mask sum: {mask.sum()}")
+        logger.debug(f"Mask shape {mask.shape}, mask sum: {mask.sum()}")
         logger.debug(f"Prompt: {prompt}")
 
         return source_image, prompt, mask, points
