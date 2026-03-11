@@ -86,7 +86,7 @@ class MetricsEvaluator:
     def __init__(self, device: str = "cuda"):
         self.device = device
         self.if_metric = None
-        self.md_metric = None
+        #self.md_metric = None
         self.transform = create_tensor_transform()
     
     def initialize(self):
@@ -94,10 +94,10 @@ class MetricsEvaluator:
         logger.info("Initializing evaluation metrics...")
         
         self.if_metric = LPIPSImageFidelity(net="alex", device=self.device)
-        self.md_metric = DIFTMeanDistance(
-            model_name="sd2-community/stable-diffusion-2-1",
-            device=self.device,
-        )
+        #self.md_metric = DIFTMeanDistance(
+        #    model_name="sd2-community/stable-diffusion-2-1",
+        #    device=self.device,
+        #)
         
         logger.info("Evaluation metrics initialized successfully")
     
@@ -114,7 +114,7 @@ class MetricsEvaluator:
         Returns:
             Dictionary with 'image_fidelity' and 'mean_distance' keys
         """
-        if self.if_metric is None or self.md_metric is None:
+        if self.if_metric is None: #or self.md_metric is None
             raise RuntimeError("Metrics not initialized. Call initialize() first.")
         
         # Convert base image (numpy) to tensor
@@ -131,17 +131,17 @@ class MetricsEvaluator:
         target_points = [(int(p[1]), int(p[0])) for p in points[1::2]]
         
         # Compute Mean Distance
-        mean_distance = self.md_metric.mean_distance(
-            base_tensor,
-            dragged_tensor,
-            handle_points=handle_points,
-            target_points=target_points,
-            prompt=prompt,
-        )
+        #mean_distance = self.md_metric.mean_distance(
+        #    base_tensor,
+        #    dragged_tensor,
+        #    handle_points=handle_points,
+        #    target_points=target_points,
+        #    prompt=prompt,
+        #)
         
         return {
             'image_fidelity': image_fidelity,
-            'mean_distance': mean_distance
+            #'mean_distance': mean_distance
         }
 
 
