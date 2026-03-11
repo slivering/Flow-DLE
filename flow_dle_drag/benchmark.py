@@ -94,10 +94,10 @@ class MetricsEvaluator:
         logger.info("Initializing evaluation metrics...")
         
         self.if_metric = LPIPSImageFidelity(net="alex", device=self.device)
-        #self.md_metric = DIFTMeanDistance(
-        #    model_name="sd2-community/stable-diffusion-2-1",
-        #    device=self.device,
-        #)
+        self.md_metric = DIFTMeanDistance(
+            model_name="sd2-community/stable-diffusion-2-1",
+            device=self.device,
+        )
         
         logger.info("Evaluation metrics initialized successfully")
     
@@ -114,7 +114,7 @@ class MetricsEvaluator:
         Returns:
             Dictionary with 'image_fidelity' and 'mean_distance' keys
         """
-        if self.if_metric is None: #or self.md_metric is None
+        if self.if_metric is None or self.md_metric is None:
             raise RuntimeError("Metrics not initialized. Call initialize() first.")
         
         # Convert base image (numpy) to tensor
@@ -131,17 +131,17 @@ class MetricsEvaluator:
         target_points = [(int(p[1]), int(p[0])) for p in points[1::2]]
         
         # Compute Mean Distance
-        #mean_distance = self.md_metric.mean_distance(
-        #    base_tensor,
-        #    dragged_tensor,
-        #    handle_points=handle_points,
-        #    target_points=target_points,
-        #    prompt=prompt,
-        #)
+        mean_distance = self.md_metric.mean_distance(
+            base_tensor,
+            dragged_tensor,
+            handle_points=handle_points,
+            target_points=target_points,
+            prompt=prompt,
+        )
         
         return {
             'image_fidelity': image_fidelity,
-            #'mean_distance': mean_distance
+            'mean_distance': mean_distance
         }
 
 
@@ -255,6 +255,15 @@ def benchmark_mode(args: argparse.Namespace):
                         prompt,
                         num_inference_steps=pipeline_config.num_inference_steps,
                     )
+
+                    # Compare against the final image from the inverted latent instead
+                    # because flow inversion significantly affects the original image
+                    reverted_state = pipe.infer_until(state, pipeline_config.num_inference_steps)
+                    source_image_redecoded = pipe.pipe.decode_latents(
+                        reverted_state.latent,
+                        disable_safety_checker=True
+                    )[0][0]
+                    source_image_redecoded = np.array(source_image_redecoded)
                     
                     # Run drag
                     drag_output = run_rf_drag(
@@ -267,9 +276,9 @@ def benchmark_mode(args: argparse.Namespace):
                     )
                     
                     # Compute evaluation metrics
-                    try:
+                    try:   
                         metrics = metrics_evaluator.compute(
-                            base_image=source_image,
+                            base_image=source_image_redecoded,
                             dragged_image=drag_output.final_image,
                             points=points,
                             prompt=prompt,

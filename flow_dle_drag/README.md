@@ -14,13 +14,17 @@ python -m flow_dle_drag benchmark --root_dir drag_bench_data --result_dir drag_b
 
 # Custom configuration
 python -m flow_dle_drag benchmark \
-    --device cuda \
     --root_dir drag_bench_data \
     --result_dir drag_bench_results \
-    --drag_step 5 \
-    --n_pix_step 90 \
+    --num_steps 50 \
+    --end_step 50 \
+    --drag_step 40 \
+    --n_pix_step 30 \
     --lr 0.01 \
-    --lam 0.5
+    --lam 0.5 \
+    --show_optim \
+    --vis_interval 10 \
+    --save_intermediates
 ```
 
 ### As Library
